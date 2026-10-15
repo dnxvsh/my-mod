@@ -1,0 +1,926 @@
+name: Build mod
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate project files
+        run: |
+          mkdir ElytraRealism
+          cd ElytraRealism
+          mkdir -p "$(dirname 'build.gradle')"
+          cat > 'build.gradle' <<'__MOD_EOF__'
+          buildscript {
+              repositories {
+                  maven { url = 'https://maven.minecraftforge.net' }
+                  maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'org.spongepowered:mixingradle:0.7.+'
+              }
+          }
+
+          plugins {
+              id 'eclipse'
+              id 'idea'
+              id 'maven-publish'
+              id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+          }
+          apply plugin: 'org.spongepowered.mixin'
+
+          version = mod_version
+          group = mod_group_id
+
+          base {
+              archivesName = mod_id
+          }
+
+          java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+          minecraft {
+              mappings channel: 'official', version: minecraft_version
+              copyIdeResources = true
+
+              runs {
+                  configureEach {
+                      workingDirectory project.file('run')
+                      property 'forge.logging.markers', 'REGISTRIES'
+                      property 'forge.logging.console.level', 'debug'
+                      property 'mixin.env.remapRefMap', 'true'
+                      property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+                      mods {
+                          "${mod_id}" {
+                              source sourceSets.main
+                          }
+                      }
+                  }
+                  client {
+                  }
+                  server {
+                      args '--nogui'
+                  }
+              }
+          }
+
+          mixin {
+              add sourceSets.main, "${mod_id}.refmap.json"
+              config "${mod_id}.mixins.json"
+          }
+
+          repositories {
+              mavenCentral()
+              maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+          }
+
+          dependencies {
+              minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+              annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+          }
+
+          tasks.named('processResources', ProcessResources).configure {
+              var replaceProperties = [
+                  minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+                  forge_version: forge_version, forge_version_range: forge_version_range,
+                  loader_version_range: loader_version_range,
+                  mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+                  mod_authors: mod_authors, mod_description: mod_description
+              ]
+              inputs.properties replaceProperties
+              filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+                  expand replaceProperties + [project: project]
+              }
+          }
+
+          tasks.named('jar', Jar).configure {
+              manifest {
+                  attributes([
+                      'Specification-Title'     : mod_id,
+                      'Specification-Vendor'    : mod_authors,
+                      'Specification-Version'   : '1',
+                      'Implementation-Title'    : project.name,
+                      'Implementation-Version'  : project.jar.archiveVersion,
+                      'Implementation-Vendor'   : mod_authors,
+                      'MixinConfigs'            : "${mod_id}.mixins.json"
+                  ])
+              }
+              finalizedBy 'reobfJar'
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              options.encoding = 'UTF-8'
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'__MOD_EOF__'
+          org.gradle.jvmargs=-Xmx3G
+          org.gradle.daemon=false
+
+          minecraft_version=1.20.1
+          minecraft_version_range=[1.20.1,1.21)
+          forge_version=47.3.0
+          forge_version_range=[47,)
+          loader_version_range=[47,)
+
+          mod_id=elytrarealism
+          mod_name=Elytra Realism
+          mod_license=MIT
+          mod_version=1.0.0
+          mod_group_id=com.elytrarealism
+          mod_authors=You
+          mod_description=Realistic aerodynamic elytra flight: lift, drag, stall, banking, wind, thermals and G-forces.
+          __MOD_EOF__
+          mkdir -p "$(dirname 'settings.gradle')"
+          cat > 'settings.gradle' <<'__MOD_EOF__'
+          pluginManagement {
+              repositories {
+                  gradlePluginPortal()
+                  maven { name = 'MinecraftForge'; url = 'https://maven.minecraftforge.net/' }
+              }
+          }
+          rootProject.name = 'ElytraRealism'
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/ElytraConfig.java')"
+          cat > 'src/main/java/com/elytrarealism/ElytraConfig.java' <<'__MOD_EOF__'
+          package com.elytrarealism;
+
+          import net.minecraftforge.common.ForgeConfigSpec;
+          import org.apache.commons.lang3.tuple.Pair;
+
+          public final class ElytraConfig {
+              public static final Common COMMON;
+              public static final ForgeConfigSpec COMMON_SPEC;
+              public static final Client CLIENT;
+              public static final ForgeConfigSpec CLIENT_SPEC;
+
+              static {
+                  Pair<Common, ForgeConfigSpec> c = new ForgeConfigSpec.Builder().configure(Common::new);
+                  COMMON = c.getLeft();
+                  COMMON_SPEC = c.getRight();
+                  Pair<Client, ForgeConfigSpec> cl = new ForgeConfigSpec.Builder().configure(Client::new);
+                  CLIENT = cl.getLeft();
+                  CLIENT_SPEC = cl.getRight();
+              }
+
+              private ElytraConfig() {}
+
+              /** Physics settings (elytrarealism-common.toml). */
+              public static final class Common {
+                  public final ForgeConfigSpec.BooleanValue enabled, banking, wind, turbulence, thermals;
+                  public final ForgeConfigSpec.DoubleValue aeroStrength, stallAngle, maxG, maxSpeed,
+                          airDensityHeight, windStrength, impactDamage;
+
+                  Common(ForgeConfigSpec.Builder b) {
+                      b.push("physics");
+                      enabled = b.comment("Master switch. false = vanilla elytra physics.")
+                              .define("enabled", true);
+                      aeroStrength = b.comment("Wing efficiency. Higher = more lift and drag, lower stall speed.")
+                              .defineInRange("aeroStrength", 0.11, 0.02, 0.3);
+                      stallAngle = b.comment("Angle of attack (degrees) where the wing stalls.")
+                              .defineInRange("stallAngle", 17.0, 8.0, 35.0);
+                      maxG = b.comment("Structural G limit of the wings (lift is clipped above this).")
+                              .defineInRange("maxG", 8.0, 2.0, 20.0);
+                      maxSpeed = b.comment("Soft speed limit in blocks/tick (extra drag above it). 4.0 = 80 m/s.")
+                              .defineInRange("maxSpeed", 4.0, 1.5, 10.0);
+                      airDensityHeight = b.comment("Scale height for thinner air at altitude. 0 = constant density.")
+                              .defineInRange("airDensityHeight", 600.0, 0.0, 5000.0);
+                      impactDamage = b.comment("Multiplier for damage when hitting a wall.")
+                              .defineInRange("impactDamage", 1.0, 0.0, 5.0);
+                      banking = b.comment("Banked turns: lift tilts into the turn based on your turn rate.")
+                              .define("banking", true);
+                      b.pop();
+
+                      b.push("environment");
+                      wind = b.comment("Steady wind that drifts you (stronger in storms and at altitude).")
+                              .define("wind", true);
+                      windStrength = b.comment("Wind strength multiplier.")
+                              .defineInRange("windStrength", 1.0, 0.0, 5.0);
+                      turbulence = b.comment("Random gusts, stronger in rain/thunder and near the ground.")
+                              .define("turbulence", true);
+                      thermals = b.comment("Rising air above campfires, lava, magma, fire and hot biomes by day.")
+                              .define("thermals", true);
+                      b.pop();
+                  }
+              }
+
+              /** Client-only visuals (elytrarealism-client.toml). */
+              public static final class Client {
+                  public final ForgeConfigSpec.BooleanValue showHud, cameraRoll, cameraShake, dynamicFov,
+                          gVision, vaporTrails, stallWarning;
+                  public final ForgeConfigSpec.DoubleValue rollFactor, stallNoseDrop;
+
+                  Client(ForgeConfigSpec.Builder b) {
+                      b.push("visuals");
+                      showHud = b.define("showHud", true);
+                      cameraRoll = b.comment("Roll the camera when banking.").define("cameraRoll", true);
+                      rollFactor = b.comment("Camera roll multiplier. Negative flips the direction.")
+                              .defineInRange("rollFactor", 0.7, -2.0, 2.0);
+                      cameraShake = b.comment("Buffeting at stall, very high speed and high G.")
+                              .define("cameraShake", true);
+                      dynamicFov = b.comment("Wider field of view at high speed.").define("dynamicFov", true);
+                      gVision = b.comment("Blackout / redout vignette at high positive / negative G.")
+                              .define("gVision", true);
+                      vaporTrails = b.comment("Condensation trails from the wingtips at high G or speed.")
+                              .define("vaporTrails", true);
+                      stallWarning = b.comment("Beeping stall warning.").define("stallWarning", true);
+                      stallNoseDrop = b.comment("Degrees per tick the nose drops in a deep stall. 0 = off.")
+                              .defineInRange("stallNoseDrop", 1.5, 0.0, 5.0);
+                      b.pop();
+                  }
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/ElytraPhysics.java')"
+          cat > 'src/main/java/com/elytrarealism/ElytraPhysics.java' <<'__MOD_EOF__'
+          package com.elytrarealism;
+
+          import net.minecraft.sounds.SoundEvents;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.effect.MobEffects;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.MoverType;
+          import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.level.Level;
+          import net.minecraft.world.phys.Vec3;
+          import net.minecraftforge.common.ForgeMod;
+
+          /**
+           * Replacement for vanilla elytra movement.
+           *
+           * Model (units: blocks, ticks; gravity = 0.08 b/t^2):
+           *  - Your look direction is the wing/body axis, bank is derived from your turn rate.
+           *  - Angle of attack = angle between airflow and body axis -> lift/drag with a real stall.
+           *  - Sideslip produces a restoring side force (the velocity "weathervanes" into your heading).
+           *  - Air is a moving medium: wind, gusts and thermals change the relative airflow.
+           */
+          public final class ElytraPhysics {
+
+              private static final double CL_MAX = 1.25;        // max lift coefficient before stall
+              private static final double CD0 = 0.04;           // parasitic drag
+              private static final double K_INDUCED = 0.045;    // induced drag factor
+              private static final double POST_STALL_CD = 1.3;  // extra drag when stalled
+              private static final double SIDE_FORCE = 0.9;     // sideslip restoring force
+
+              private ElytraPhysics() {}
+
+              public static boolean shouldHandle(LivingEntity e) {
+                  return e instanceof Player
+                          && e.isFallFlying()
+                          && !e.isInWater()
+                          && !e.isInLava()
+                          && ElytraConfig.COMMON.enabled.get()
+                          && e.isControlledByLocalInstance();
+              }
+
+              private static double gravity(LivingEntity e, Vec3 v) {
+                  double g = 0.08;
+                  AttributeInstance ai = e.getAttribute(ForgeMod.ENTITY_GRAVITY.get());
+                  if (ai != null) g = ai.getValue();
+                  if (v.y <= 0.0 && e.hasEffect(MobEffects.SLOW_FALLING)) {
+                      g = Math.min(g, 0.01);
+                      e.resetFallDistance();
+                  }
+                  return Math.max(g, 0.001);
+              }
+
+              public static void travel(Player p) {
+                  ElytraConfig.Common cfg = ElytraConfig.COMMON;
+                  Level level = p.level();
+                  long now = level.getGameTime();
+
+                  FlightState st = FlightState.get(p);
+                  if (now - st.lastTick > 3) st.reset(p);
+                  st.lastTick = now;
+
+                  Vec3 v = p.getDeltaMovement();
+                  double g = gravity(p, v);
+                  if (v.y > -0.5) p.fallDistance = 1.0F;
+
+                  // ---- environment ----
+                  st.heightAgl = Environment.heightAboveGround(level, p, 64.0);
+                  Vec3 wind = Environment.wind(level, p, st, now);
+                  st.wind = wind;
+                  double rho = Environment.airDensity(p.getY(), cfg.airDensityHeight.get());
+
+                  Vec3 rel = v.subtract(wind);                 // velocity relative to the air
+                  double speed = rel.length();
+                  double vH = Math.sqrt(rel.x * rel.x + rel.z * rel.z);
+
+                  // ---- banking (coordinated turn: tan(bank) = v * turnRate / g) ----
+                  float yaw = p.getYRot();
+                  double dYaw = Mth.wrapDegrees(yaw - st.prevYaw);
+                  st.prevYaw = yaw;
+                  st.turnRate += (Math.toRadians(dYaw) - st.turnRate) * 0.5;
+                  double targetBank = cfg.banking.get()
+                          ? Mth.clamp(Math.atan(vH * st.turnRate / g), -1.3, 1.3) : 0.0;
+                  st.prevBank = st.bank;
+                  st.bank += (targetBank - st.bank) * 0.18;
+
+                  // ---- body axes ----
+                  double yawRad = Math.toRadians(yaw);
+                  Vec3 f = p.getLookAngle();
+                  Vec3 r0 = new Vec3(-Math.cos(yawRad), 0.0, -Math.sin(yawRad)); // right
+                  Vec3 u0 = r0.cross(f);                                         // up
+                  double cb = Math.cos(st.bank), sb = Math.sin(st.bank);
+                  Vec3 up = u0.scale(cb).add(r0.scale(sb));
+                  Vec3 right = r0.scale(cb).subtract(u0.scale(sb));
+                  st.up = up;
+                  st.right = right;
+
+                  // ---- aerodynamics ----
+                  Vec3 aero = Vec3.ZERO;
+                  double load = 0.0;
+                  double alpha = 0.0;
+                  double stallA = Math.toRadians(cfg.stallAngle.get());
+
+                  if (speed > 1.0E-3) {
+                      Vec3 vh = rel.scale(1.0 / speed);
+                      double vf = vh.dot(f);
+                      double vu = vh.dot(up);
+                      double vr = vh.dot(right);
+
+                      alpha = Math.atan2(-vu, vf);             // signed angle of attack
+                      double aa = Math.abs(alpha);
+
+                      double slope = CL_MAX / stallA;
+                      double pre = Mth.clamp(slope * alpha, -CL_MAX, CL_MAX);
+                      double post = 1.05 * Math.sin(2.0 * alpha);
+                      double sigma = smoothstep(stallA, stallA + 0.17, aa); // 0 attached .. 1 stalled
+                      double cl = (1.0 - sigma) * pre + sigma * post;
+
+                      double nearGround = Mth.clamp(1.0 - st.heightAgl / 3.0, 0.0, 1.0); // ground effect
+                      double kInd = K_INDUCED * (1.0 - 0.5 * nearGround);
+                      double sa = Math.sin(alpha);
+                      double cd = CD0 + kInd * pre * pre + sigma * POST_STALL_CD * sa * sa + 0.5 * Math.abs(vr);
+
+                      double q = cfg.aeroStrength.get() * rho * speed * speed;
+                      double maxG = cfg.maxG.get();
+
+                      double liftAcc = Mth.clamp(q * cl * (1.0 + 0.15 * nearGround), -0.4 * maxG * g, maxG * g);
+                      double sideAcc = Mth.clamp(-q * SIDE_FORCE * vr, -0.6 * maxG * g, 0.6 * maxG * g);
+                      double over = Math.max(0.0, speed / cfg.maxSpeed.get() - 1.0);
+                      double dragAcc = Math.min(q * cd * (1.0 + 6.0 * over), speed * 0.9);
+
+                      aero = perpendicular(up, vh).scale(liftAcc)
+                              .add(perpendicular(right, vh).scale(sideAcc))
+                              .subtract(vh.scale(dragAcc));
+                      load = aero.dot(up) / g;                 // G felt along the body "up" axis
+                  }
+
+                  st.gLoad = load;
+                  st.gSmooth += (load - st.gSmooth) * 0.25;
+                  st.aoaDeg = Math.toDegrees(alpha);
+                  st.stallMargin = Math.abs(alpha) / stallA;
+                  st.stalled = speed > 0.15 && Math.abs(alpha) > stallA;
+
+                  // ---- integrate ----
+                  Vec3 nv = v.add(aero).add(0.0, -g, 0.0);
+                  double hardMax = cfg.maxSpeed.get() * 1.6;
+                  double len = nv.length();
+                  if (len > hardMax) nv = nv.scale(hardMax / len);
+
+                  p.setDeltaMovement(nv);
+                  double hBefore = nv.horizontalDistance();
+                  p.move(MoverType.SELF, p.getDeltaMovement());
+
+                  // ---- impacts / landing (same rules as vanilla, server side) ----
+                  if (p.horizontalCollision && !level.isClientSide) {
+                      double hAfter = p.getDeltaMovement().horizontalDistance();
+                      float dmg = (float) ((hBefore - hAfter) * 10.0 - 3.0) * cfg.impactDamage.get().floatValue();
+                      if (dmg > 0.0F) {
+                          p.playSound(dmg > 4.0F ? SoundEvents.PLAYER_BIG_FALL : SoundEvents.PLAYER_SMALL_FALL, 1.0F, 1.0F);
+                          p.hurt(p.damageSources().flyIntoWall(), dmg);
+                      }
+                  }
+                  if (p.onGround() && !level.isClientSide) {
+                      p.stopFallFlying();
+                  }
+              }
+
+              /** Component of a perpendicular to dir, normalized (zero if degenerate). */
+              private static Vec3 perpendicular(Vec3 a, Vec3 dir) {
+                  Vec3 r = a.subtract(dir.scale(a.dot(dir)));
+                  double len = r.length();
+                  return len > 1.0E-4 ? r.scale(1.0 / len) : Vec3.ZERO;
+              }
+
+              private static double smoothstep(double e0, double e1, double x) {
+                  double t = Mth.clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+                  return t * t * (3.0 - 2.0 * t);
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/ElytraRealism.java')"
+          cat > 'src/main/java/com/elytrarealism/ElytraRealism.java' <<'__MOD_EOF__'
+          package com.elytrarealism;
+
+          import net.minecraftforge.fml.ModLoadingContext;
+          import net.minecraftforge.fml.common.Mod;
+          import net.minecraftforge.fml.config.ModConfig;
+
+          @Mod(ElytraRealism.MODID)
+          public class ElytraRealism {
+              public static final String MODID = "elytrarealism";
+
+              public ElytraRealism() {
+                  ModLoadingContext ctx = ModLoadingContext.get();
+                  ctx.registerConfig(ModConfig.Type.COMMON, ElytraConfig.COMMON_SPEC);
+                  ctx.registerConfig(ModConfig.Type.CLIENT, ElytraConfig.CLIENT_SPEC);
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/Environment.java')"
+          cat > 'src/main/java/com/elytrarealism/Environment.java' <<'__MOD_EOF__'
+          package com.elytrarealism;
+
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.tags.BlockTags;
+          import net.minecraft.tags.FluidTags;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.level.ClipContext;
+          import net.minecraft.world.level.Level;
+          import net.minecraft.world.level.block.Blocks;
+          import net.minecraft.world.level.block.state.BlockState;
+          import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+          import net.minecraft.world.phys.BlockHitResult;
+          import net.minecraft.world.phys.HitResult;
+          import net.minecraft.world.phys.Vec3;
+
+          /** Air density, wind, gusts and thermals. All values are in blocks/tick. */
+          public final class Environment {
+              private Environment() {}
+
+              public static double airDensity(double y, double scaleHeight) {
+                  if (scaleHeight <= 0.0) return 1.0;
+                  return Mth.clamp(Math.exp(-(y - 64.0) / scaleHeight), 0.5, 1.4);
+              }
+
+              public static double heightAboveGround(Level level, Entity e, double max) {
+                  Vec3 from = e.position();
+                  Vec3 to = from.add(0.0, -max, 0.0);
+                  BlockHitResult hit = level.clip(new ClipContext(from, to,
+                          ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, e));
+                  return hit.getType() == HitResult.Type.MISS ? max : from.y - hit.getLocation().y;
+              }
+
+              /** Cheap smooth pseudo-noise in [-1, 1]. */
+              public static double noise(double a, double b, double c) {
+                  return (Math.sin(a * 1.7 + Math.sin(b * 2.3))
+                          + Math.sin(b * 1.3 + Math.sin(c * 1.9))
+                          + Math.sin(c * 1.1 + Math.sin(a * 2.1))) / 3.0;
+              }
+
+              /** Velocity of the air mass at the player's position (also updates thermal state). */
+              public static Vec3 wind(Level level, Player p, FlightState st, long t) {
+                  ElytraConfig.Common cfg = ElytraConfig.COMMON;
+                  double x = p.getX(), y = p.getY(), z = p.getZ();
+                  double wx = 0.0, wy = 0.0, wz = 0.0;
+                  double weather = level.isThundering() ? 2.5 : (level.isRaining() ? 1.6 : 1.0);
+
+                  if (cfg.wind.get()) {
+                      double dir = Math.PI * 2.0 * (0.5 + 0.5 * Math.sin(t * 0.00009 + 0.7))
+                              + Math.sin(t * 0.00031) * 0.6;
+                      double speed = 0.08 * cfg.windStrength.get() * weather
+                              * (1.0 + Math.max(0.0, y - 64.0) / 160.0);
+                      speed *= 0.7 + 0.3 * Math.sin(t * 0.0009 + x * 0.002);
+                      wx = Math.cos(dir) * speed;
+                      wz = Math.sin(dir) * speed;
+                  }
+
+                  if (cfg.turbulence.get()) {
+                      double near = Mth.clamp(1.0 - st.heightAgl / 24.0, 0.0, 1.0);
+                      double k = 0.012 * weather * weather * (1.0 + 2.0 * near);
+                      double tt = t * 0.07;
+                      wx += noise(x * 0.06 + tt, y * 0.08, z * 0.06 + 17.3) * k;
+                      wy += noise(x * 0.07 + 5.1, y * 0.06 + tt * 1.3, z * 0.07) * k * 0.8;
+                      wz += noise(x * 0.06 + 41.7, y * 0.08 + tt * 0.8, z * 0.06) * k;
+                  }
+
+                  if (cfg.thermals.get()) {
+                      if (t - st.thermalScan >= 4) {
+                          st.thermalScan = t;
+                          st.thermalTarget = scanThermals(level, p, st.heightAgl);
+                      }
+                      st.thermal += (st.thermalTarget - st.thermal) * 0.2;
+                      wy += st.thermal;
+                  } else {
+                      st.thermal = 0.0;
+                  }
+                  return new Vec3(wx, wy, wz);
+              }
+
+              private static double scanThermals(Level level, Player p, double agl) {
+                  BlockPos origin = p.blockPosition();
+                  double best = 0.0;
+                  BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+
+                  for (int dx = -1; dx <= 1; dx++) {
+                      for (int dz = -1; dz <= 1; dz++) {
+                          for (int dy = 0; dy <= 32; dy++) {
+                              int by = origin.getY() - dy;
+                              if (by < level.getMinBuildHeight()) break;
+                              m.set(origin.getX() + dx, by, origin.getZ() + dz);
+                              BlockState s = level.getBlockState(m);
+                              double heat = heat(s);
+                              if (heat > 0.0) {
+                                  double lift = heat * (1.0 - dy / 33.0) * (dx == 0 && dz == 0 ? 1.0 : 0.6);
+                                  best = Math.max(best, lift);
+                                  break;
+                              }
+                              if (!s.isAir() && s.blocksMotion()) break;
+                          }
+                      }
+                  }
+
+                  // Sun-heated ground in hot biomes: patchy, slowly drifting thermals by day.
+                  if (level.isDay() && !level.isRaining() && agl > 2.0 && agl < 80.0) {
+                      float temp = level.getBiome(origin).value().getBaseTemperature();
+                      if (temp >= 1.5F) {
+                          double n = noise(p.getX() * 0.02 + 3.1, 0.0, p.getZ() * 0.02 + level.getGameTime() * 0.0004);
+                          if (n > 0.1) {
+                              best = Math.max(best, 0.09 * (n - 0.1) / 0.9 * (1.0 - agl / 90.0));
+                          }
+                      }
+                  }
+                  return best;
+              }
+
+              private static double heat(BlockState s) {
+                  if (s.getFluidState().is(FluidTags.LAVA)) return 0.22;
+                  if (s.is(Blocks.MAGMA_BLOCK)) return 0.10;
+                  if (s.is(BlockTags.FIRE)) return 0.14;
+                  if (s.is(BlockTags.CAMPFIRES) && s.hasProperty(BlockStateProperties.LIT)
+                          && s.getValue(BlockStateProperties.LIT)) return 0.18;
+                  return 0.0;
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/FlightState.java')"
+          cat > 'src/main/java/com/elytrarealism/FlightState.java' <<'__MOD_EOF__'
+          package com.elytrarealism;
+
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.phys.Vec3;
+
+          import java.util.Collections;
+          import java.util.Map;
+          import java.util.WeakHashMap;
+
+          /** Per-player flight data that must persist between ticks (also read by the HUD/camera). */
+          public final class FlightState {
+              // Entity.equals() compares ids, and client/server players share an id, so keep separate maps.
+              private static final Map<Entity, FlightState> CLIENT = Collections.synchronizedMap(new WeakHashMap<>());
+              private static final Map<Entity, FlightState> SERVER = Collections.synchronizedMap(new WeakHashMap<>());
+
+              public long lastTick = Long.MIN_VALUE / 4;
+              public long thermalScan = Long.MIN_VALUE / 4;
+              public float prevYaw;
+              public double bank, prevBank, turnRate;
+              public double gLoad, gSmooth, aoaDeg, stallMargin, heightAgl = 64.0;
+              public double thermal, thermalTarget;
+              public boolean stalled;
+              public Vec3 right = new Vec3(1, 0, 0);
+              public Vec3 up = new Vec3(0, 1, 0);
+              public Vec3 wind = Vec3.ZERO;
+
+              private static Map<Entity, FlightState> map(Entity e) {
+                  return e.level().isClientSide ? CLIENT : SERVER;
+              }
+
+              public static FlightState get(Entity e) {
+                  return map(e).computeIfAbsent(e, k -> new FlightState());
+              }
+
+              /** Returns null if the entity never flew. */
+              public static FlightState peek(Entity e) {
+                  return map(e).get(e);
+              }
+
+              public boolean isActive(long now) {
+                  return now - lastTick <= 2;
+              }
+
+              public void reset(Entity e) {
+                  bank = prevBank = turnRate = 0.0;
+                  gLoad = gSmooth = 1.0;
+                  aoaDeg = stallMargin = 0.0;
+                  stalled = false;
+                  thermal = thermalTarget = 0.0;
+                  thermalScan = Long.MIN_VALUE / 4;
+                  prevYaw = e.getYRot();
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/client/ClientEvents.java')"
+          cat > 'src/main/java/com/elytrarealism/client/ClientEvents.java' <<'__MOD_EOF__'
+          package com.elytrarealism.client;
+
+          import com.elytrarealism.ElytraConfig;
+          import com.elytrarealism.ElytraRealism;
+          import com.elytrarealism.FlightState;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.player.LocalPlayer;
+          import net.minecraft.core.particles.ParticleTypes;
+          import net.minecraft.sounds.SoundEvents;
+          import net.minecraft.sounds.SoundSource;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.phys.Vec3;
+          import net.minecraftforge.api.distmarker.Dist;
+          import net.minecraftforge.client.event.ComputeFovModifierEvent;
+          import net.minecraftforge.client.event.ViewportEvent;
+          import net.minecraftforge.event.TickEvent;
+          import net.minecraftforge.eventbus.api.SubscribeEvent;
+          import net.minecraftforge.fml.common.Mod;
+
+          /** Camera roll, shake, FOV, wingtip vapor, stall nose-drop and stall warning. */
+          @Mod.EventBusSubscriber(modid = ElytraRealism.MODID, bus = Mod.EventBusSubscriber.Bus.FORGE, value = Dist.CLIENT)
+          public final class ClientEvents {
+              private ClientEvents() {}
+
+              private static FlightState activeState(Minecraft mc, Player p) {
+                  if (p == null || mc.level == null || !p.isFallFlying()) return null;
+                  FlightState st = FlightState.peek(p);
+                  return (st != null && st.isActive(mc.level.getGameTime())) ? st : null;
+              }
+
+              @SubscribeEvent
+              public static void onCameraAngles(ViewportEvent.ComputeCameraAngles e) {
+                  Minecraft mc = Minecraft.getInstance();
+                  LocalPlayer p = mc.player;
+                  FlightState st = activeState(mc, p);
+                  if (st == null) return;
+
+                  ElytraConfig.Client cfg = ElytraConfig.CLIENT;
+                  float pt = (float) e.getPartialTick();
+                  float roll = 0.0F;
+                  if (cfg.cameraRoll.get()) {
+                      double bank = Mth.lerp(pt, st.prevBank, st.bank);
+                      roll = (float) (Math.toDegrees(bank) * cfg.rollFactor.get());
+                  }
+
+                  double shake = 0.0;
+                  if (cfg.cameraShake.get()) {
+                      if (st.stalled) shake += 0.9;
+                      shake += Mth.clamp((p.getDeltaMovement().length() - 2.2) * 0.35, 0.0, 1.2);
+                      shake += Mth.clamp((Math.abs(st.gSmooth) - 5.0) * 0.15, 0.0, 1.0);
+                  }
+                  if (shake > 0.0) {
+                      double tm = mc.level.getGameTime() + pt;
+                      e.setPitch(e.getPitch() + (float) (Math.sin(tm * 2.9) * shake * 0.5));
+                      e.setYaw(e.getYaw() + (float) (Math.cos(tm * 3.7) * shake * 0.5));
+                      roll += (float) (Math.sin(tm * 4.3) * shake * 0.8);
+                  }
+                  e.setRoll(e.getRoll() + roll);
+              }
+
+              @SubscribeEvent
+              public static void onFov(ComputeFovModifierEvent e) {
+                  if (!ElytraConfig.CLIENT.dynamicFov.get()) return;
+                  Player p = e.getPlayer();
+                  if (p == null || !p.isFallFlying()) return;
+                  double sp = p.getDeltaMovement().length();
+                  float extra = (float) Mth.clamp((sp - 1.0) / 3.0, 0.0, 1.0) * 0.30F;
+                  e.setNewFovModifier(e.getNewFovModifier() * (1.0F + extra));
+              }
+
+              @SubscribeEvent
+              public static void onClientTick(TickEvent.ClientTickEvent e) {
+                  if (e.phase != TickEvent.Phase.END) return;
+                  Minecraft mc = Minecraft.getInstance();
+                  LocalPlayer p = mc.player;
+                  if (mc.isPaused()) return;
+                  FlightState st = activeState(mc, p);
+                  if (st == null) return;
+
+                  ElytraConfig.Client cfg = ElytraConfig.CLIENT;
+                  double speed = p.getDeltaMovement().length();
+
+                  // Deep stall: the nose drops by itself (like a real aircraft).
+                  if (st.stalled && st.aoaDeg > 0.0 && speed < 1.6 && cfg.stallNoseDrop.get() > 0.0) {
+                      double excess = Mth.clamp(st.stallMargin - 1.0, 0.0, 0.5) * 2.0;
+                      float drop = (float) (cfg.stallNoseDrop.get() * excess);
+                      p.setXRot(Mth.clamp(p.getXRot() + drop, -90.0F, 90.0F));
+                  }
+
+                  // Condensation trails at the wingtips.
+                  if (cfg.vaporTrails.get() && (st.gSmooth > 4.0 || st.gSmooth < -2.0 || speed > 2.6)) {
+                      Vec3 c = p.position().add(0.0, p.getBbHeight() * 0.55, 0.0).subtract(p.getLookAngle().scale(0.4));
+                      for (int s = -1; s <= 1; s += 2) {
+                          Vec3 tip = c.add(st.right.scale(0.9 * s));
+                          mc.level.addParticle(ParticleTypes.CLOUD, tip.x, tip.y, tip.z, 0.0, 0.0, 0.0);
+                      }
+                  }
+
+                  // Stall warning beeper.
+                  if (cfg.stallWarning.get() && st.aoaDeg > 0.0 && st.stallMargin > 0.92
+                          && mc.level.getGameTime() % 5 == 0) {
+                      mc.level.playLocalSound(p.getX(), p.getY(), p.getZ(), SoundEvents.DISPENSER_FAIL,
+                              SoundSource.PLAYERS, 0.4F, 2.0F, false);
+                  }
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/client/ClientModEvents.java')"
+          cat > 'src/main/java/com/elytrarealism/client/ClientModEvents.java' <<'__MOD_EOF__'
+          package com.elytrarealism.client;
+
+          import com.elytrarealism.ElytraRealism;
+          import net.minecraftforge.api.distmarker.Dist;
+          import net.minecraftforge.client.event.RegisterGuiOverlaysEvent;
+          import net.minecraftforge.eventbus.api.SubscribeEvent;
+          import net.minecraftforge.fml.common.Mod;
+
+          @Mod.EventBusSubscriber(modid = ElytraRealism.MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
+          public final class ClientModEvents {
+              private ClientModEvents() {}
+
+              @SubscribeEvent
+              public static void registerOverlays(RegisterGuiOverlaysEvent e) {
+                  e.registerAboveAll("flight_hud", FlightHud::render);
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/client/FlightHud.java')"
+          cat > 'src/main/java/com/elytrarealism/client/FlightHud.java' <<'__MOD_EOF__'
+          package com.elytrarealism.client;
+
+          import com.elytrarealism.ElytraConfig;
+          import com.elytrarealism.FlightState;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.player.LocalPlayer;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.phys.Vec3;
+          import net.minecraftforge.client.gui.overlay.ForgeGui;
+
+          import java.util.Locale;
+
+          /** Flight instruments + blackout/redout vignette. */
+          public final class FlightHud {
+              private FlightHud() {}
+
+              public static void render(ForgeGui gui, GuiGraphics g, float partialTick, int width, int height) {
+                  Minecraft mc = Minecraft.getInstance();
+                  LocalPlayer p = mc.player;
+                  if (p == null || mc.level == null || mc.options.hideGui || !p.isFallFlying()) return;
+                  FlightState st = FlightState.peek(p);
+                  if (st == null || !st.isActive(mc.level.getGameTime())) return;
+
+                  ElytraConfig.Client cfg = ElytraConfig.CLIENT;
+
+                  // G-force vision
+                  if (cfg.gVision.get()) {
+                      double gl = st.gSmooth;
+                      if (gl > 4.5) {
+                          vignette(g, width, height, (float) Mth.clamp((gl - 4.5) / 4.0, 0.0, 0.92), 0x000000);
+                      } else if (gl < -1.5) {
+                          vignette(g, width, height, (float) Mth.clamp((-gl - 1.5) / 2.5, 0.0, 0.7), 0xAA0000);
+                      }
+                  }
+
+                  if (!cfg.showHud.get()) return;
+
+                  Vec3 v = p.getDeltaMovement();
+                  double kmh = v.length() * 72.0;          // blocks/tick -> km/h
+                  double vs = v.y * 20.0;                  // m/s
+                  String agl = st.heightAgl >= 63.5 ? ">64 m" : String.format(Locale.ROOT, "%.0f m", st.heightAgl);
+
+                  String[] lines = {
+                          String.format(Locale.ROOT, "SPD  %.0f km/h", kmh),
+                          String.format(Locale.ROOT, "ALT  %.0f m", p.getY()),
+                          "AGL  " + agl,
+                          String.format(Locale.ROOT, "V/S  %+.1f m/s", vs),
+                          String.format(Locale.ROOT, "G    %.1f", st.gSmooth),
+                          String.format(Locale.ROOT, "AoA  %.0f\u00B0", st.aoaDeg),
+                          String.format(Locale.ROOT, "AIR  %+.1f m/s", st.thermal * 20.0)
+                  };
+
+                  int color = st.stalled ? 0xFF5555 : (st.stallMargin > 0.85 && st.aoaDeg > 0 ? 0xFFFF55 : 0x55FF55);
+                  int x = 8;
+                  int y = height / 2 - lines.length * 5;
+                  for (String line : lines) {
+                      g.drawString(mc.font, line, x, y, color, true);
+                      y += 10;
+                  }
+
+                  if (st.stalled && (mc.level.getGameTime() / 4) % 2 == 0) {
+                      g.drawCenteredString(mc.font, "STALL", width / 2, height / 2 + 30, 0xFF3333);
+                  }
+              }
+
+              private static void vignette(GuiGraphics g, int w, int h, float a, int rgb) {
+                  int solid = ((int) (a * 255.0F) & 0xFF) << 24 | rgb;
+                  int clear = rgb;
+                  int tint = ((int) (a * 0.35F * 255.0F) & 0xFF) << 24 | rgb;
+                  g.fill(0, 0, w, h, tint);
+                  g.fillGradient(0, 0, w, h / 3, solid, clear);
+                  g.fillGradient(0, h - h / 3, w, h, clear, solid);
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/java/com/elytrarealism/mixin/LivingEntityMixin.java')"
+          cat > 'src/main/java/com/elytrarealism/mixin/LivingEntityMixin.java' <<'__MOD_EOF__'
+          package com.elytrarealism.mixin;
+
+          import com.elytrarealism.ElytraPhysics;
+          import net.minecraft.world.entity.LivingEntity;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.phys.Vec3;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.Shadow;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(LivingEntity.class)
+          public abstract class LivingEntityMixin {
+
+              @Shadow
+              public abstract void calculateEntityAnimation(boolean flying);
+
+              /** Replaces vanilla fall-flying movement with the aerodynamic model. */
+              @Inject(method = "travel", at = @At("HEAD"), cancellable = true)
+              private void elytrarealism$travel(Vec3 input, CallbackInfo ci) {
+                  LivingEntity self = (LivingEntity) (Object) this;
+                  if (ElytraPhysics.shouldHandle(self)) {
+                      ElytraPhysics.travel((Player) self);
+                      this.calculateEntityAnimation(false);
+                      ci.cancel();
+                  }
+              }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/resources/META-INF/mods.toml')"
+          cat > 'src/main/resources/META-INF/mods.toml' <<'__MOD_EOF__'
+          modLoader="javafml"
+          loaderVersion="${loader_version_range}"
+          license="${mod_license}"
+
+          [[mods]]
+          modId="${mod_id}"
+          version="${mod_version}"
+          displayName="${mod_name}"
+          authors="${mod_authors}"
+          description='''${mod_description}'''
+
+          [[dependencies.${mod_id}]]
+              modId="forge"
+              mandatory=true
+              versionRange="${forge_version_range}"
+              ordering="NONE"
+              side="BOTH"
+
+          [[dependencies.${mod_id}]]
+              modId="minecraft"
+              mandatory=true
+              versionRange="${minecraft_version_range}"
+              ordering="NONE"
+              side="BOTH"
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/resources/elytrarealism.mixins.json')"
+          cat > 'src/main/resources/elytrarealism.mixins.json' <<'__MOD_EOF__'
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.elytrarealism.mixin",
+            "compatibilityLevel": "JAVA_17",
+            "refmap": "elytrarealism.refmap.json",
+            "mixins": [
+              "LivingEntityMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          __MOD_EOF__
+          mkdir -p "$(dirname 'src/main/resources/pack.mcmeta')"
+          cat > 'src/main/resources/pack.mcmeta' <<'__MOD_EOF__'
+          {
+            "pack": {
+              "description": "${mod_name} resources",
+              "pack_format": 15
+            }
+          }
+          __MOD_EOF__
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.1.1
+      - name: Build
+        working-directory: ElytraRealism
+        run: gradle build --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ElytraRealism-jar
+          path: ElytraRealism/build/libs/*.jar
